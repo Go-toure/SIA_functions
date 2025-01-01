@@ -5,7 +5,6 @@
 
 #' Title : generate_scope_plots
 #'
-#' @param data_path 
 #' @param shapefiles_path 
 #' @param scope_csv_path 
 #' @param x 
@@ -15,43 +14,35 @@
 #' @export
 #'
 #' @examples
-generate_scope_plots <- function(data_path, shapefiles_path, scope_csv_path, x, y) {
-  setwd(shapefiles_path)
-  
-  if(!require('gganimate')) {
-    install.packages('gganimate')
-    library('gganimate')
-  }
-  if(!require('ggplot2')) {
-    install.packages('ggplot2')
-    library('ggplot2')
-  }
-  if(!require('dplyr')) {
-    install.packages('dplyr')
-    library('dplyr')
-  }
-  if(!require('sf')) {
-    install.packages('sf')
-    library('sf')
-  }
-  
+generate_scope_plots <- function(shapefiles_path, scope_csv_path, x, y) {
   # Load necessary libraries
-  library(tidyverse)
-  library(lubridate)
-  library(patchwork)
-  library(writexl)
+  if (!requireNamespace("pacman", quietly = TRUE)) install.packages("pacman")
+  pacman::p_load(ggplot2, dplyr, sf, lubridate, patchwork, readr)
   
-  # Define country lists
-  block <- pays <- c("ALGERIA", "BURKINA FASO", "COTE D IVOIRE", "MAURITANIA", "MALI", "GUINEA", "GHANA", "TOGO", "BENIN", "SIERRA LEONE", "LIBERIA", "GUINEA-BISSAU", "THE GAMBIA", "SENEGAL", "NIGERIA", "NIGER", "CAMEROON", "CHAD", "CENTRAL AFRICAN REPUBLIC", "DEMOCRATIC REPUBLIC OF THE CONGO", "CONGO", "GABON", "EQUATORIAL GUINEA", "RWANDA", "BURUNDI", "ANGOLA", "KENYA", "ERITREA", "ETHIOPIA", "SOUTH SUDAN", "UGANDA", "TANZANIA", "MALAWI", "ZAMBIA", "MOZAMBIQUE", "ZIMBABWE", "BOTSWANA", "NAMIBIA", "ESWATINI (KINGDOM)", "LESOTHO(KINGDOM", "SOUTH AFRICA", "MADAGASCAR", "COMOROS", "SEYCHELLES", "MAURITIUS", "CAPE VERDE", "SAO TOME AND PRINCIPE", "UNITED REPUBLIC OF TANZANIA")
+  # Define country list
+  block <- c(
+    "ALGERIA", "BURKINA FASO", "COTE D IVOIRE", "MAURITANIA", "MALI", "GUINEA",
+    "GHANA", "TOGO", "BENIN", "SIERRA LEONE", "LIBERIA", "GUINEA-BISSAU",
+    "GAMBIA", "SENEGAL", "NIGERIA", "NIGER", "CAMEROON", "CHAD",
+    "CENTRAL AFRICAN REPUBLIC", "DEMOCRATIC REPUBLIC OF THE CONGO", "CONGO",
+    "GABON", "EQUATORIAL GUINEA", "RWANDA", "BURUNDI", "ANGOLA", "KENYA",
+    "ERITREA", "ETHIOPIA", "SOUTH SUDAN", "UGANDA", "TANZANIA", "MALAWI",
+    "ZAMBIA", "MOZAMBIQUE", "ZIMBABWE", "BOTSWANA", "NAMIBIA", "ESWATINI (KINGDOM)",
+    "LESOTHO(KINGDOM", "SOUTH AFRICA", "MADAGASCAR", "COMOROS", "SEYCHELLES",
+    "MAURITIUS", "CAPE VERDE", "SAO TOME AND PRINCIPE", "UNITED REPUBLIC OF TANZANIA"
+  )
+  
+  # block <- c("GAMBIA" )
+  
   
   # Load shapefiles
-  all_countries <- read_rds(file.path(data_path, "global.ctry.rds"))
-  all_provinces <- read_rds(file.path(data_path, "global.prov.rds"))
-  all_districts <- read_rds(file.path(data_path, "global.dist.rds"))
+  all_countries <- read_rds(file.path(shapefiles_path, "global.ctry.rds"))
+  all_provinces <- read_rds(file.path(shapefiles_path, "global.prov.rds"))
+  all_districts <- read_rds(file.path(shapefiles_path, "global.dist.rds"))
   
-  AFRO_layer <- all_countries |> 
+  AFRO_layer <- all_countries |>
     filter(WHO_REGION == "AFRO")
-  Africa <- all_countries |> 
+  Africa <- all_countries |>
     filter(WORLD_CONTINENTS == "AFRICA")
   
   country_layer <- all_countries |>
@@ -61,74 +52,79 @@ generate_scope_plots <- function(data_path, shapefiles_path, scope_csv_path, x, 
   district_layer <- all_districts |>
     filter(ADM0_NAME %in% block)
   
-  data <- read_csv(scope_csv_path)
+  # Load and preprocess data
+  data <- read_csv(scope_csv_path) |>
+    # filter(country =="GAMBIA") |> 
+    mutate(floor_date = floor_date(round_start_date, "month"))
   
-  # Get the maximum month label
-  max_month_label <- max(data$round_start_date)
+  # Get the maximum month label and filter last x months
+  max_month_label <- max(data$round_start_date, na.rm = TRUE)
+  last_months <- seq(max(data$floor_date, na.rm = TRUE), by = "-1 month", length.out = x)
   
-  # Add floor_date column
-  data <- data |> mutate(floor_date = floor_date(round_start_date, "month"))
-  
-  # Calculate the last six months
-  last_six_months <- seq(max(data$floor_date), by = "-1 month", length.out = x)
   data <- data |> 
-    filter(floor_date %in% last_six_months)
+    filter(floor_date %in% last_months) |> 
+    mutate(month = month(floor_date))
   
-  year <- year(last_six_months)
+  # Initialize plots list
+  unique_months <- sort(unique(data$month), decreasing = FALSE)
+  plots_list <- vector("list", length(unique_months))
   
-  # Map the scope
-  plots_list <- list()
-  
-  # Dynamically set the vector to take the unique values of the month column
-  unique_months <- unique(data$month)
-  
-  for (selected_month_yr in unique_months) {
-    A <- data |>
-      filter(month == selected_month_yr) |> 
-      filter(country %in% pays) |>
-      dplyr::select(country, province, district, vaccine.type)
+  for (i in seq_along(unique_months)) {
+    selected_month <- unique_months[i]
+    month_data <- data |> filter(month == selected_month)
     
-    # Join the spatial layer of provinces
-    LQAS_performance2 <- left_join(district_layer, A, relationship = "many-to-many",  
-                                   by = c("ADM0_NAME" = "country",
-                                          "ADM2_NAME" = "district")) |> 
-      filter(vaccine.type != "NA")
+    # Count district performance by vaccine type for legend
+    district_counts <- month_data |> count(vaccine.type, name = "count")
+    labels_with_counts <- district_counts |> 
+      mutate(label = paste0(vaccine.type, " (", count, ")")) |> 
+      pull(label, name = vaccine.type)
     
-    # Plot the result of the analysis
-    last_6 <- ggplot() + 
+    # Join with spatial data
+    joined_data <- left_join(
+      district_layer, month_data, relationship = "many-to-many",
+      by = c("ADM0_NAME" = "country", "ADM2_NAME" = "district")
+    ) |> filter(!is.na(vaccine.type))
+    
+    # Create plot
+    plots_list[[i]] <- ggplot() + 
       geom_sf(data = Africa, linewidth = 0.5, color = "black", fill = "grey") +
       geom_sf(data = province_layer, color = NA, fill = "white") +
-      geom_sf(data = LQAS_performance2, aes(fill = vaccine.type), color = NA) +
+      geom_sf(data = joined_data, aes(fill = vaccine.type), color = NA) +
       geom_sf(data = country_layer, linewidth = 0.5, color = "black", fill = NA) +
-      scale_fill_manual(values = c("nOPV2" = "cornflowerblue", "bOPV" = "yellow3")) +
+      scale_fill_manual(values = c("nOPV2" = "cornflowerblue", "bOPV" = "yellow3"), 
+                        labels = labels_with_counts) +
       theme_void() +
-      labs(fill = paste0("Vaccine Type"), 
-           title = paste("Scope in", month.abb[month(selected_month_yr)], year)) +
-      theme(plot.title = element_text(hjust = 0.5), 
-            plot.subtitle = element_text(hjust = 0.5))
-    
-    plots_list[[selected_month_yr]] <- last_6
+      labs(
+        fill = "vaaccine type - #districts",
+        title = paste("Scope in", month.abb[selected_month], year(max_month_label))
+      ) +
+      theme(
+        plot.title = element_text(size = 20, hjust = 0.5, face = "bold"),  # Increased title size
+        # legend.position = c(0.88, 0.50),  # Legend in top-right corner
+        legend.box.spacing = unit(0.2, "cm"),  # Add spacing between legend and map
+        legend.title = element_text(size = 16),                            # Adjust legend title size
+        legend.text = element_text(size = 14),                             # Adjust legend text size
+        plot.caption = element_text(size = 16, hjust = 0, lineheight = 1.5))
+    # plot.title = element_text(hjust = 0.5))
   }
   
-  # Update the title of the last plot
+  # Update the title of the first plot
   plots_list[[length(plots_list)]] <- plots_list[[length(plots_list)]] +
     ggtitle(paste("Scope as of", max_month_label))
   
-  # Filter out any NULL or invalid entries
-  valid_plots_list <- Filter(function(x) inherits(x, "ggplot"), plots_list)
+  # Combine plots
+  multiplot <- wrap_plots(plots_list, ncol = y) +
+    plot_annotation(
+      caption = paste("Source: PEP SIA repository \n© WHO AFRO, Production date:", Sys.Date())
+    )
+  output_path <- paste0("C:/Users/TOURE/Documents/LCB/outputs/LQAS_performance_plot", "SCOPE", ".png")
+  # Save the combined plot as an image
+  ggsave(output_path, plot = multiplot, width = 33, height = 18, dpi = 300)  # Adjusted dimensions for PowerPoint slide
   
-  # Combine the plots
-  multiplot <- wrap_plots(valid_plots_list, ncol = y)
-  
-  # Add source and production date at the bottom of the last plot
-  multiplot_with_caption <- multiplot + labs(caption = paste("Source: PEP SIA calendar \n© WHO AFRO, Production date:", Sys.Date()))
-  
-  # Display the plots caption = "Source: UNHCR Refugee Data Finder\n© UNHCR, The UN Refugee Agency"
-  return(multiplot_with_caption)
+  return(multiplot)
 }
 
 # # Example usage
-# data_path <- "C:/Users/TOURE/Mes documents/REPOSITORIES/LQAS_raw_data/"
 # shapefiles_path <- "C:/Users/TOURE/Mes documents/REPOSITORIES/LQAS_raw_data/"
 # scope_csv_path <- "C:/Users/TOURE/Mes documents/REPOSITORIES/SCOPE/scope_.csv"
 # x <- 10
@@ -147,7 +143,7 @@ generate_scope_plots <- function(data_path, shapefiles_path, scope_csv_path, x, 
 #' @export
 #'
 #' @examples
-generate_lqas_plots_DS <- function(lqas_data_path, LQAS_shapefiles_path, x1, y1) {
+generate_lqas_plots_DS <- function(lqas_data_path, shapefiles_path, x1, y1) {
   # Load necessary libraries
   if (!requireNamespace("pacman", quietly = TRUE)) install.packages("pacman")
   pacman::p_load(
@@ -158,9 +154,9 @@ generate_lqas_plots_DS <- function(lqas_data_path, LQAS_shapefiles_path, x1, y1)
   if (x1 <= 0 || y1 <= 0) stop("x1 and y1 must be positive integers.")
   
   # Load shapefiles
-  all_countries <- read_rds(file.path(LQAS_shapefiles_path, "global.ctry.rds"))
-  all_provinces <- read_rds(file.path(LQAS_shapefiles_path, "global.prov.rds"))
-  all_districts <- read_rds(file.path(LQAS_shapefiles_path, "global.dist.rds"))
+  all_countries <- read_rds(file.path(shapefiles_path, "global.ctry.rds"))
+  all_provinces <- read_rds(file.path(shapefiles_path, "global.prov.rds"))
+  all_districts <- read_rds(file.path(shapefiles_path, "global.dist.rds"))
   
   # Filter shapefiles for the target region
   block <- c(
@@ -188,16 +184,26 @@ generate_lqas_plots_DS <- function(lqas_data_path, LQAS_shapefiles_path, x1, y1)
     filter(ADM0_NAME %in% block)
   
   # Load data and preprocess
-  data <- read_csv(file.path(lqas_data_path, "AFRO_LQAS_data_C.csv"))
+  data <- read_csv(file.path(lqas_data_path, "AFRO_LQAS_data_C.csv")) |> 
+    mutate(performance = case_when(
+      performance == "High"~"high",
+      performance =="Moderate"~ "moderate",
+      performance =="Poor"~ "poor",
+      performance =="Very_poor"~ "very poor",
+      TRUE~ performance
+    ))
   max_month_label <- max(data$start_date, na.rm = TRUE)
+  
+  
   
   data <- data |> 
     mutate(floor_date = floor_date(start_date, "month")) |> 
     filter(floor_date %in% seq(max(floor_date), by = "-1 month", length.out = x1)) |> 
     mutate(month = month(start_date))
   
-  unique_months <- sort(unique(data$month), decreasing = TRUE)
+  unique_months <- sort(unique(data$month), decreasing = FALSE)
   plots_list <- vector("list", length(unique_months))
+  
   
   # Generate plots
   for (i in seq_along(unique_months)) {
@@ -217,26 +223,35 @@ generate_lqas_plots_DS <- function(lqas_data_path, LQAS_shapefiles_path, x1, y1)
       geom_sf(data = province_layer, color = NA, fill = "white") +
       geom_sf(data = LQAS_performance2, aes(fill = performance), color = NA) +
       geom_sf(data = country_layer, linewidth = 0.5, color = "black", fill = NA) +
-      scale_fill_manual(values = c("High" = "green4", "Moderate" = "yellow", "Poor" = "red", "Very_poor" = "brown4"), 
+      scale_fill_manual(values = c("high" = "green4", "moderate" = "yellow", "poor" = "red", "very poor" = "brown4"), 
                         labels = labels_with_counts) +
       theme_void() +
       labs(
         fill = "LQAS Range", 
         title = paste("LQAS Performance in", month.abb[selected_month], year(max_month_label))
       ) +
-      theme(plot.title = element_text(hjust = 0.5))
+      theme(
+        plot.title = element_text(size = 20, hjust = 0.5, face = "bold"),  # Increased title size
+        # legend.position = c(0.88, 0.50),  # Legend in top-right corner
+        legend.box.spacing = unit(0.2, "cm"),  # Add spacing between legend and map
+        legend.title = element_text(size = 16),                            # Adjust legend title size
+        legend.text = element_text(size = 14),                             # Adjust legend text size
+        plot.caption = element_text(size = 16, hjust = 0, lineheight = 1.5))
+    # plot.title = element_text(hjust = 0.5))
   }
   
+  
   # Update the title of the first plot
-  plots_list[[1]] <- plots_list[[1]] +
+  plots_list[[length(plots_list)]] <- plots_list[[length(plots_list)]] +
     ggtitle(paste("LQAS performance as of", max_month_label))
   # Combine plots
   multiplot <- wrap_plots(plots_list, ncol = y1) + 
     plot_annotation(
       caption = paste("Source: PEP SIA repository \n© WHO AFRO, Production date:", Sys.Date())
     )
-  
-  # Return the combined plot
+  output_path <- paste0("C:/Users/TOURE/Documents/LCB/outputs/LQAS_performance_plot", "LQAS_DS", ".png")
+  # Save the combined plot as an image
+  ggsave(output_path, plot = multiplot, width = 33, height = 18, dpi = 300)  # Adjusted dimensions for PowerPoint slide
   return(multiplot)
 }
 
@@ -264,35 +279,18 @@ generate_lqas_plots_DS <- function(lqas_data_path, LQAS_shapefiles_path, x1, y1)
 #' @export
 #'
 #' @examples
-generate_lqas_plots_CTRY <- function(LQAS_data_path, LQAS_shapefiles_path, x1, y1) {
-  if(!require('gganimate')) {
-    install.packages('gganimate')
-    library('gganimate')
-  }
-  if(!require('ggplot2')) {
-    install.packages('ggplot2')
-    library('ggplot2')
-  }
-  if(!require('dplyr')) {
-    install.packages('dplyr')
-    library('dplyr')
-  }
-  if(!require('sf')) {
-    install.packages('sf')
-    library('sf')
-  }
-  
+generate_lqas_plots_CTRY <- function(data_path, shapefiles_path, x1, y1) {
   # Load necessary libraries
-  library(pacman)
-  p_load(tidyverse, lubridate, sf, ggplot2, patchwork, writexl)
+  if (!requireNamespace("pacman", quietly = TRUE)) install.packages("pacman")
+  pacman::p_load(ggplot2, dplyr, sf, lubridate, patchwork, readr, tidyverse)
   
-  # Define country lists
+  # Define target countries
   block <- pays <- c("ALGERIA", "BURKINA FASO", "COTE D IVOIRE", "MAURITANIA", "MALI", "GUINEA", "GHANA", "TOGO", "BENIN", "SIERRA LEONE", "LIBERIA", "GUINEA-BISSAU", "THE GAMBIA", "SENEGAL", "NIGERIA", "NIGER", "CAMEROON", "CHAD", "CENTRAL AFRICAN REPUBLIC", "DEMOCRATIC REPUBLIC OF THE CONGO", "CONGO", "GABON", "EQUATORIAL GUINEA", "RWANDA", "BURUNDI", "ANGOLA", "KENYA", "ERITREA", "ETHIOPIA", "SOUTH SUDAN", "UGANDA", "TANZANIA", "MALAWI", "ZAMBIA", "MOZAMBIQUE", "ZIMBABWE", "BOTSWANA", "NAMIBIA", "ESWATINI (KINGDOM)", "LESOTHO(KINGDOM", "SOUTH AFRICA", "MADAGASCAR", "COMOROS", "SEYCHELLES", "MAURITIUS", "CAPE VERDE", "SAO TOME AND PRINCIPE", "UNITED REPUBLIC OF TANZANIA")
   
   # Load shapefiles
-  all_countries <- read_rds(file.path(LQAS_shapefiles_path, "global.ctry.rds"))
-  all_provinces <- read_rds(file.path(LQAS_shapefiles_path, "global.prov.rds"))
-  all_districts <- read_rds(file.path(LQAS_shapefiles_path, "global.dist.rds"))
+  all_countries <- read_rds(file.path(shapefiles_path, "global.ctry.rds"))
+  all_provinces <- read_rds(file.path(shapefiles_path, "global.prov.rds"))
+  all_districts <- read_rds(file.path(shapefiles_path, "global.dist.rds"))
   
   AFRO_layer <- all_countries |> 
     filter(WHO_REGION == "AFRO")
@@ -306,40 +304,35 @@ generate_lqas_plots_CTRY <- function(LQAS_data_path, LQAS_shapefiles_path, x1, y
   district_layer <- all_districts |>
     filter(ADM0_NAME %in% block)
   
-  data <- read_csv(file.path(LQAS_data_path, "AFRO_LQAS_data_c.csv"))
+  # Load LQAS data
+  data <- read_csv(file.path(data_path, "AFRO_LQAS_data_c.csv"))
   
   # Get the maximum month label
-  max_month_label <- max(data$start_date)
+  max_month_label <- max(data$start_date, na.rm = TRUE)
   
-  # Add floor_date column
-  data <- data |> mutate(floor_date = floor_date(start_date, "month"))
-  
-  # Calculate the last six months
-  last_six_months <- seq(max(data$floor_date), by = "-1 month", length.out = x1)
+  # Preprocess data
   data <- data |> 
-    filter(floor_date %in% last_six_months) |> 
+    mutate(floor_date = floor_date(start_date, "month")) |> 
+    filter(floor_date %in% seq(max(floor_date, na.rm = TRUE), by = "-1 month", length.out = x1)) |> 
     mutate(month = month(start_date))
-  year <- year(last_six_months)
   
-  # Map the scope
-  plots_list <- list()
+  # Create plots for each month
+  unique_months <- sort(unique(data$month), decreasing = FALSE)
+  plots_list <- vector("list", length(unique_months))
   
-  # Dynamically set the vector to take the unique values of the month column
-  unique_months <- unique(data$month)
-  
-  for (selected_month in unique_months) {
-    A <- data |>
-      filter(month == selected_month) |>
-      select(country, province, district, response, start_date, total_missed, roundNumber) |>  
-      group_by(country, province, district) |>
-      summarise(missed_chil = mean(total_missed), .groups = 'drop') |> 
-      mutate(missed_chil = round(missed_chil, 2)) |>
+  for (i in seq_along(unique_months)) {
+    selected_month <- unique_months[i]
+    A <- data |> 
+      filter(month == selected_month) |> 
+      select(country, district, total_missed) |> 
+      group_by(country, district) |> 
+      summarise(missed_chil = mean(total_missed, na.rm = TRUE), .groups = 'drop') |> 
       mutate(performance = case_when(
         missed_chil < 4 ~ "high",
         missed_chil >= 4 & missed_chil < 9 ~ "moderate",
         missed_chil >= 9 & missed_chil < 20 ~ "poor",
         missed_chil >= 20 ~ "very poor"
-      )) |>  
+      )) |> 
       mutate(status = ifelse(performance == "high", 1, 0)) |> 
       group_by(country) |> 
       summarise(percent_pass = mean(status, na.rm = TRUE), .groups = 'drop') |> 
@@ -351,41 +344,57 @@ generate_lqas_plots_CTRY <- function(LQAS_data_path, LQAS_shapefiles_path, x1, y
       )) |> 
       filter(country %in% pays)
     
-    # Join the spatial layer of provinces
-    LQAS_status3 <- left_join(AFRO_layer, A, by = c("ADM0_NAME" = "country")) |> 
+    # Count districts for legend
+    district_counts <- A |> count(performance, name = "count")
+    labels_with_counts <- district_counts |> 
+      mutate(label = paste0(performance, " (", count, ")")) |> 
+      pull(label, name = performance)
+    
+    # Join with spatial data
+    joined_layer <- left_join(AFRO_layer, A, by = c("ADM0_NAME" = "country")) |> 
       filter(!is.na(performance))
     
-    # Create the plot
-    plot_LQAS_CTRY <- ggplot() + 
+    # Generate plot
+    plots_list[[i]] <- ggplot() +
       geom_sf(data = Africa, linewidth = 0.5, color = "black", fill = "grey") +
       geom_sf(data = AFRO_layer, linewidth = 0.5, color = "black", fill = "white") +
-      geom_sf(data = LQAS_status3, aes(fill = performance), color = NA) +
-      scale_fill_manual(values = c(">=90" = "green4", "[50-90[" = "yellow", "<50" = "red")) +
+      geom_sf(data = joined_layer, aes(fill = performance), color = NA) +
+      scale_fill_manual(values = c(">=90" = "green4", "[50-90[" = "yellow", "<50" = "red"), 
+                        labels = labels_with_counts) +
       geom_sf(data = AFRO_layer, linewidth = 0.5, color = "black", fill = NA) +
       theme_void() +
-      labs(fill = "Performance", 
-           title = paste("LQAS performance in", month.abb[selected_month], year[which(month(last_six_months) == selected_month)])) +
-      theme(plot.title = element_text(hjust = 0.5), 
-            plot.subtitle = element_text(hjust = 0.5))
-    
-    plots_list[[as.character(selected_month)]] <- plot_LQAS_CTRY
+      labs(
+        fill = "Performance",
+        title = paste("LQAS performance in", month.abb[selected_month], year(max_month_label))
+      ) +
+      theme(
+        plot.title = element_text(size = 20, hjust = 0.5, face = "bold"),  # Increased title size
+        # legend.position = c(0.88, 0.50),  # Legend in top-right corner
+        legend.box.spacing = unit(0.2, "cm"),  # Add spacing between legend and map
+        legend.title = element_text(size = 16),                            # Adjust legend title size
+        legend.text = element_text(size = 14),                             # Adjust legend text size
+        plot.caption = element_text(size = 16, hjust = 0, lineheight = 1.5))
+    # plot.title = element_text(hjust = 0.5))
   }
   
-  # Update the title of the last plot
+  # Update title of the first plot
   plots_list[[length(plots_list)]] <- plots_list[[length(plots_list)]] +
     ggtitle(paste("LQAS performance as of", max_month_label))
   
-  # Filter out any NULL or invalid entries
-  valid_plots_list <- Filter(function(x) inherits(x, "ggplot"), plots_list)
-  
-  # Combine the plots
-  multiplot <- wrap_plots(valid_plots_list, ncol = y1)
-  
-  # Add source and production date at the bottom of the last plot
-  multiplot_with_caption <- multiplot + labs(caption = paste("Source: PEP SIA repository \n© WHO AFRO, Production date:", Sys.Date()))
-  
-  # Display the plots
-  multiplot_with_caption
+  # Combine plots
+  # multiplot <- wrap_plots(plots_list, ncol = y1) +
+  multiplot <- wrap_plots(plots_list, ncol = y1, nrow = ceiling(length(plots_list) / y1)) +
+    plot_annotation(
+      caption = paste("Source: PEP SIA repository \n© WHO AFRO, Production date:", Sys.Date())
+    ) &
+    theme(
+      plot.caption = element_text(size = 15, hjust = 0, lineheight = 1.5),
+      plot.margin = margin(1, 1, 1, 1, "cm")
+    )
+  output_path <- paste0("C:/Users/TOURE/Documents/LCB/outputs/LQAS_performance_plot", "LQAS_CTRY", ".png")
+  # Save the combined plot as an image
+  ggsave(output_path, plot = multiplot, width = 33, height = 18, dpi = 300)  # Adjusted dimensions for PowerPoint slide
+  return(multiplot)
 }
 
 # # Example usage
@@ -411,37 +420,18 @@ generate_lqas_plots_CTRY <- function(LQAS_data_path, LQAS_shapefiles_path, x1, y
 #' @export
 #'
 #' @examples
-generate_im_coverage_plots_DS <- function(IM_data_path, IM_shapefiles_path, a, b) {
-  setwd(IM_data_path)
-  
-  if(!require('gganimate')) {
-    install.packages('gganimate')
-    library('gganimate')
-  }
-  if(!require('ggplot2')) {
-    install.packages('ggplot2')
-    library('ggplot2')
-  }
-  if(!require('dplyr')) {
-    install.packages('dplyr')
-    library('dplyr')
-  }
-  if(!require('sf')) {
-    install.packages('sf')
-    library('sf')
-  }
-  
+generate_im_coverage_plots_DS <- function(IM_data_path, shapefiles_path, a, b) {
   # Load necessary libraries
-  library(pacman)
-  p_load(tidyverse, lubridate, ggplot2, patchwork, writexl)
+  if (!requireNamespace("pacman", quietly = TRUE)) install.packages("pacman")
+  pacman::p_load(tidyverse, lubridate, sf, ggplot2, patchwork)
   
-  # Define country lists
+  # Define country list
   block <- pays <- c("ALGERIA", "BURKINA FASO", "COTE D IVOIRE", "MAURITANIA", "MALI", "GUINEA", "GHANA", "TOGO", "BENIN", "SIERRA LEONE", "LIBERIA", "GUINEA-BISSAU", "THE GAMBIA", "SENEGAL", "NIGERIA", "NIGER", "CAMEROON", "CHAD", "CENTRAL AFRICAN REPUBLIC", "DEMOCRATIC REPUBLIC OF THE CONGO", "CONGO", "GABON", "EQUATORIAL GUINEA", "RWANDA", "BURUNDI", "ANGOLA", "KENYA", "ERITREA", "ETHIOPIA", "SOUTH SUDAN", "UGANDA", "TANZANIA", "MALAWI", "ZAMBIA", "MOZAMBIQUE", "ZIMBABWE", "BOTSWANA", "NAMIBIA", "ESWATINI (KINGDOM)", "LESOTHO(KINGDOM", "SOUTH AFRICA", "MADAGASCAR", "COMOROS", "SEYCHELLES", "MAURITIUS", "CAPE VERDE", "SAO TOME AND PRINCIPE", "UNITED REPUBLIC OF TANZANIA")
   
   # Load shapefiles
-  all_countries <- read_rds(file.path(IM_shapefiles_path, "global.ctry.rds"))
-  all_provinces <- read_rds(file.path(IM_shapefiles_path, "global.prov.rds"))
-  all_districts <- read_rds(file.path(IM_shapefiles_path, "global.dist.rds"))
+  all_countries <- read_rds(file.path(shapefiles_path, "global.ctry.rds"))
+  all_provinces <- read_rds(file.path(shapefiles_path, "global.prov.rds"))
+  all_districts <- read_rds(file.path(shapefiles_path, "global.dist.rds"))
   
   AFRO_layer <- all_countries |> 
     filter(WHO_REGION == "AFRO")
@@ -455,92 +445,89 @@ generate_im_coverage_plots_DS <- function(IM_data_path, IM_shapefiles_path, a, b
   district_layer <- all_districts |>
     filter(ADM0_NAME %in% block)
   
-  data <- read_csv(file.path(IM_data_path, "AFRO_Inside_HH_M.csv"))
-  # a <- 6
-  # b <- 3
-  # Get the maximum month label
-  max_month_label <- max(data$start_date)
-  year <- year(data$start_date)
+  # Load IM data
+  data <- read_csv(file.path(IM_data_path, "AFRO_Inside_HH_M.csv")) |> 
+    mutate(floor_date = floor_date(start_date, "month"))
   
-  # Add floor_date column
-  data <- data |> mutate(floor_date = floor_date(start_date, "month"))
+  # Get max month and filter last a months
+  max_month_label <- max(data$start_date, na.rm = TRUE)
+  last_months <- seq(max(data$floor_date, na.rm = TRUE), by = "-1 month", length.out = a)
   
-  # Calculate the last six months
-  last_six_months <- seq(max(data$floor_date), by = "-1 month", length.out = a)
   data <- data |> 
-    filter(floor_date %in% last_six_months) |> 
+    filter(floor_date %in% last_months) |> 
     mutate(month = month(start_date))
-  year <- year(last_six_months)
-  # map the scope
-  plots_list <- list()
   
-  # Dynamically set the vector to take the unique values of the month column
-  unique_months <- unique(data$month)
+  # Initialize list for plots
+  unique_months <- sort(unique(data$month), decreasing = FALSE)
+  plots_list <- vector("list", length(unique_months))
   
-  for (selected_month_yr in unique_months) {
-    A <- data |>
-      filter(month == selected_month_yr) |>
+  for (i in seq_along(unique_months)) {
+    selected_month <- unique_months[i]
+    A <- data |> 
+      filter(month == selected_month) |> 
       mutate(
         coverage = case_when(
           cv >= 0.95 ~ "good",
-          cv >=0.8 & cv <0.95 ~ "moderate",
-          cv <0.8 ~ "poor")) |> 
-      filter(coverage != "NA") |> 
-      filter(country %in% pays) |>
-      dplyr::select(country, province, district, response, roundNumber, coverage)
+          cv >= 0.8 & cv < 0.95 ~ "moderate",
+          cv < 0.8 ~ "poor"
+        )
+      ) |> 
+      filter(!is.na(coverage) & country %in% block) |> 
+      select(country, province, district, coverage)
     
+    # Count districts for legend
+    district_counts <- A |> count(coverage, name = "count")
+    labels_with_counts <- district_counts |> 
+      mutate(label = paste0(coverage, " (", count, ")")) |> 
+      pull(label, name = coverage)
     
-    # Join the spatial layer of provinces
-    LQAS_performance2 <- left_join(district_layer, A, relationship = "many-to-many",  
-                                   by = c("ADM0_NAME" = "country", "ADM2_NAME" = "district")) %>%
+    # Join with spatial data
+    joined_layer <- left_join(district_layer, A, relationship = "many-to-many", by = c("ADM0_NAME" = "country", "ADM2_NAME" = "district")) |> 
       filter(!is.na(coverage))
     
-    # Create the animated plot
-    last_6 <- ggplot() + 
+    # Generate plot
+    plots_list[[i]] <- ggplot() +
       geom_sf(data = Africa, linewidth = 0.5, color = "black", fill = "grey") +
       geom_sf(data = province_layer, color = NA, fill = "white") +
-      geom_sf(data = LQAS_performance2, aes(fill = coverage), color = NA) +
+      geom_sf(data = joined_layer, aes(fill = coverage), color = NA) +
       geom_sf(data = country_layer, linewidth = 0.5, color = "black", fill = NA) +
-      scale_fill_manual(values = c("good" = "green4", "moderate" = "yellow", "poor" = "red"))+
+      scale_fill_manual(values = c("good" = "green4", "moderate" = "yellow", "poor" = "red"),
+                        labels = labels_with_counts
+      ) +
       theme_void() +
-      labs(fill = paste0("IM range"), 
-           title = paste("IM coverage in", month(selected_month_yr, label = TRUE), year)) +
-      theme(plot.title = element_text(hjust = 0.5), 
-            plot.subtitle = element_text(hjust = 0.5))
-    
-    plots_list[[selected_month_yr]] <- last_6
+      labs(
+        fill = "IM Range",
+        title = paste("IM coverage in", month.abb[selected_month], year(max_month_label))
+      ) +
+      theme(plot.title = element_text(hjust = 0.5))
   }
   
-  # Update the title of the last plot
-  plots_list[[length(plots_list)]] <- plots_list[[length(plots_list)]] +
+  # Update the title of the first plot
+  plots_list[[11]] <- plots_list[[11]] +
     ggtitle(paste("IM coverage as of", max_month_label))
   
-  # Filter out any NULL or invalid entries
-  valid_plots_list <- Filter(function(x) inherits(x, "ggplot"), plots_list)
+  # Combine plots
+  multiplot <- wrap_plots(plots_list, ncol = b) +
+    plot_annotation(
+      caption = paste("Source: PEP SIA repository \n© WHO AFRO, Production date:", Sys.Date())
+    )
   
-  # Combine the plots
-  multiplot <- wrap_plots(valid_plots_list, ncol = b)
-  
-  # Add source and production date at the bottom of the last plot
-  multiplot_with_caption <- multiplot + labs(caption = paste("Source: PEP SIA repository \n© WHO AFRO, Production date:", Sys.Date()))
-  
-  # Display the plots
-  print(multiplot_with_caption)
+  # Display the combined plots
+  print(multiplot)
   
   # Save the plot if output_path is provided
   if (!is.null(output_path)) {
-    ggsave(file.path(output_path, "choropleth_map_of_cantons.png"), plot = multiplot_with_caption, width = 10, height = 8)
+    ggsave(file.path(output_path, "IM_coverage_plot.png"), plot = multiplot, width = 12, height = 8)
   }
 }
 
-
-
-# data_path <- "C:/Users/TOURE/Mes documents/REPOSITORIES/IM_raw_data/"
+# # Example usage
+# IM_data_path <- "C:/Users/TOURE/Mes documents/REPOSITORIES/IM_raw_data/"
 # shapefiles_path <- "C:/Users/TOURE/Mes documents/REPOSITORIES/IM_raw_data/"
 # a <- 10
 # b <- 4
-# # Example usage:
-# generate_im_coverage_plots_DS(data_path,shapefiles_path, a, b)
+# 
+# generate_im_coverage_plots_DS(IM_data_path, shapefiles_path, a, b)
 
 
 # generate im coverage plot by coutnry ------------------------------------
@@ -555,35 +542,20 @@ generate_im_coverage_plots_DS <- function(IM_data_path, IM_shapefiles_path, a, b
 #' @export
 #'
 #' @examples
-generate_im_performance_plots_CTRY <- function(IM_data_path, IM_shapefiles_path, a, b) {
-  if(!require('gganimate')) {
-    install.packages('gganimate')
-    library('gganimate')
-  }
-  if(!require('ggplot2')) {
-    install.packages('ggplot2')
-    library('ggplot2')
-  }
-  if(!require('dplyr')) {
-    install.packages('dplyr')
-    library('dplyr')
-  }
-  if(!require('sf')) {
-    install.packages('sf')
-    library('sf')
-  }
-  
+# im country --------------------------------------------------------------
+
+generate_im_performance_plots_CTRY <- function(IM_data_path, shapefiles_path, a, b) {
   # Load necessary libraries
-  library(pacman)
-  p_load(tidyverse, lubridate, sf, ggplot2, patchwork, writexl)
+  if (!requireNamespace("pacman", quietly = TRUE)) install.packages("pacman")
+  pacman::p_load(tidyverse, lubridate, sf, ggplot2, patchwork)
   
-  # Define country lists
+  # Define target countries
   block <- pays <- c("ALGERIA", "BURKINA FASO", "COTE D IVOIRE", "MAURITANIA", "MALI", "GUINEA", "GHANA", "TOGO", "BENIN", "SIERRA LEONE", "LIBERIA", "GUINEA-BISSAU", "THE GAMBIA", "SENEGAL", "NIGERIA", "NIGER", "CAMEROON", "CHAD", "CENTRAL AFRICAN REPUBLIC", "DEMOCRATIC REPUBLIC OF THE CONGO", "CONGO", "GABON", "EQUATORIAL GUINEA", "RWANDA", "BURUNDI", "ANGOLA", "KENYA", "ERITREA", "ETHIOPIA", "SOUTH SUDAN", "UGANDA", "TANZANIA", "MALAWI", "ZAMBIA", "MOZAMBIQUE", "ZIMBABWE", "BOTSWANA", "NAMIBIA", "ESWATINI (KINGDOM)", "LESOTHO(KINGDOM", "SOUTH AFRICA", "MADAGASCAR", "COMOROS", "SEYCHELLES", "MAURITIUS", "CAPE VERDE", "SAO TOME AND PRINCIPE", "UNITED REPUBLIC OF TANZANIA")
   
   # Load shapefiles
-  all_countries <- read_rds(file.path(IM_shapefiles_path, "global.ctry.rds"))
-  all_provinces <- read_rds(file.path(IM_shapefiles_path, "global.prov.rds"))
-  all_districts <- read_rds(file.path(IM_shapefiles_path, "global.dist.rds"))
+  all_countries <- read_rds(file.path(shapefiles_path, "global.ctry.rds"))
+  all_provinces <- read_rds(file.path(shapefiles_path, "global.prov.rds"))
+  all_districts <- read_rds(file.path(shapefiles_path, "global.dist.rds"))
   
   AFRO_layer <- all_countries |> 
     filter(WHO_REGION == "AFRO")
@@ -597,63 +569,70 @@ generate_im_performance_plots_CTRY <- function(IM_data_path, IM_shapefiles_path,
   district_layer <- all_districts |>
     filter(ADM0_NAME %in% block)
   
-  data <- read_csv(file.path(IM_data_path, "AFRO_Inside_HH_M.csv"))
+  # Load and preprocess data
+  data <- read_csv(file.path(IM_data_path, "AFRO_Inside_HH_M.csv")) |> 
+    mutate(floor_date = floor_date(start_date, "month"))
   
-  # Get the maximum month label
-  max_month_label <- max(data$start_date)
+  max_month_label <- max(data$start_date, na.rm = TRUE)
+  last_months <- seq(max(data$floor_date, na.rm = TRUE), by = "-1 month", length.out = a)
   
-  # Add floor_date column
-  data <- data |> mutate(floor_date = floor_date(start_date, "month"))
-  
-  # Calculate the last six months
-  last_six_months <- seq(max(data$floor_date), by = "-1 month", length.out = a)
   data <- data |> 
-    filter(floor_date %in% last_six_months) |> 
+    filter(floor_date %in% last_months) |> 
     mutate(month = month(start_date), year = year(start_date))
   
-  unique_months <- unique(data$month)
-  plots_list <- list()
+  unique_months <- sort(unique(data$month), decreasing = FALSE)
+  plots_list <- vector("list", length(unique_months))
   
-  for (selected_month in unique_months) {
+  for (i in seq_along(unique_months)) {
+    selected_month <- unique_months[i]
     selected_year <- unique(data[data$month == selected_month, "year"])[1]
     
-    A <- data %>%
-      filter(month == selected_month) %>%
-      group_by(country, province, district, response, roundNumber) %>% 
-      summarise(cv = mean(cv)) %>% 
-      mutate(coverage = case_when(
-        cv >= 0.95 ~ "good",
-        cv >= 0.8 & cv < 0.95 ~ "moderate",
-        cv < 0.8 ~ "poor")) %>% 
-      mutate(status = ifelse(coverage == "good", 1, 0)) %>% 
-      group_by(country) %>% 
-      summarise(percent_pass = mean(status, na.rm = TRUE)) %>% 
-      ungroup() %>%
-      select(country, percent_pass) %>%
-      mutate(percent_pass = round(percent_pass * 100, 2)) %>%
-      mutate(performance = case_when(
-        percent_pass < 50 ~ "<50",
-        percent_pass >= 50 & percent_pass < 90 ~ "[50-90[",
-        percent_pass >= 90 ~ ">=90"))
+    A <- data |> 
+      filter(month == selected_month) |> 
+      group_by(country) |> 
+      summarise(
+        percent_pass = mean(cv >= 0.95, na.rm = TRUE) * 100,
+        .groups = "drop"
+      ) |> 
+      mutate(
+        performance = case_when(
+          percent_pass < 50 ~ "<50",
+          percent_pass >= 50 & percent_pass < 90 ~ "[50-90[",
+          percent_pass >= 90 ~ ">=90"
+        )
+      )
     
-    # Join the spatial layer of provinces
-    map1 <- left_join(AFRO_layer, A, by = c("ADM0_NAME" = "country")) %>% 
+    district_counts <- A |> 
+      count(performance, name = "count") |> 
+      mutate(label = paste0(performance, " (", count, ")")) |> 
+      pull(label, name = performance)
+    
+    joined_layer <- left_join(all_districts, A, by = c("ADM0_NAME" = "country")) |> 
       filter(!is.na(performance))
     
-    # Create the plot
-    plot_IM_CTRY <- ggplot() + 
+    plots_list[[i]] <- ggplot() +
       geom_sf(data = Africa, linewidth = 0.5, color = "black", fill = "grey") +
       geom_sf(data = AFRO_layer, linewidth = 0.5, color = "black", fill = "white") +
-      geom_sf(data = map1, aes(fill = performance), color = NA) +
+      geom_sf(data = joined_layer, aes(fill = performance), color = NA) +
       geom_sf(data = AFRO_layer, linewidth = 0.5, color = "black", fill = NA) +
-      scale_fill_manual(values = c(">=90" = "green4", "[50-90[" = "yellow", "<50" = "red")) +
+      scale_fill_manual(values = c(">=90" = "green4", "[50-90[" = "yellow", "<50" = "red"),
+                        labels = district_counts
+      ) +
       theme_void() +
-      labs(fill = "IM performance", 
-           title = paste("IM coverage in", month.abb[selected_month], selected_year)) +
-      theme(plot.title = element_text(hjust = 0.5), 
-            plot.subtitle = element_text(hjust = 0.5))
+      labs(
+        fill = "IM performance",
+        title = paste("IM coverage in", month.abb[selected_month], selected_year)
+      ) +
+      theme(
+        plot.title = element_text(size = 20, hjust = 0.5, face = "bold"),  # Increased title size
+        # legend.position = c(0.88, 0.50),  # Legend in top-right corner
+        legend.box.spacing = unit(0.2, "cm"),  # Add spacing between legend and map
+        legend.title = element_text(size = 16),                            # Adjust legend title size
+        legend.text = element_text(size = 14))
     
-    plots_list[[as.character(selected_month)]] <- plot_IM_CTRY
+    # ,                             # Adjust legend text size
+    # plot.caption = element_text(size = 16, hjust = 0, lineheight = 1.5))
+    # plot.title = element_text(hjust = 0.5))
   }
   
   # Update the title of the last plot
@@ -669,9 +648,13 @@ generate_im_performance_plots_CTRY <- function(IM_data_path, IM_shapefiles_path,
   # Add source and production date at the bottom of the last plot
   multiplot_with_caption <- multiplot + labs(caption = paste("Source: PEP SIA repository \n© WHO AFRO, Production date:", Sys.Date()))
   
-  # Display the plots
-  multiplot_with_caption
+  
+  output_path <- paste0("C:/Users/TOURE/Documents/LCB/outputs/LQAS_performance_plot", "IM_CTRY", ".png")
+  # Save the combined plot as an image
+  ggsave(output_path, plot = multiplot, width = 33, height = 18, dpi = 300)  # Adjusted dimensions for PowerPoint slide
+  return(multiplot)
 }
+
 
 
 # data_path <- "C:/Users/TOURE/Mes documents/REPOSITORIES/IM_raw_data/"
@@ -1435,7 +1418,7 @@ read_and_transform_file <- function(file_path, output_directory) {
   
   # Generate dynamic output file name
   country_name <- unique(data$Country) %>% na.omit()
-  output_file_name <- paste0(country_name, "_LQAS.rds")
+  output_file_name <- paste0(country_name, "_LQAS.csv")
   output_file_path <- file.path(output_directory, output_file_name)
   
   # Save the transformed data
